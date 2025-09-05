@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Curso: 220259989038A
-Grupo: Walter Rene Rosales / Luis Contreras
 Subnet Calculator GUI for Windows (Tkinter)
 - Enter a CIDR (e.g., 181.79.223.18/16)
-- Optionally choose a target prefix (e.g., /24) OR enter desired hosts per subred
+- Choose one of: target prefix (/xx), desired hosts per subred, OR number of subnets
 - Shows basic network info and a table of generated subnets
 - Export table to CSV
+- Colored binary mask segmentation (red / subred / host)
 """
 import math
-import sys
 from ipaddress import IPv4Interface, IPv4Network
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 APP_TITLE = "Calculadora de Subneteo - GUI"
-APP_SIZE  = "980x650"
+APP_SIZE  = "1000x760"
+
+RED_CLR = "#c0392b"      # network bits
+SUB_CLR = "#e67e22"      # subnet bits
+HOST_CLR = "#27ae60"     # host bits
 
 def to_hex(ip: str) -> str:
     return ".".join(f"{int(o):02X}" for o in ip.split("."))
@@ -62,29 +64,28 @@ def usable_host_count(net: IPv4Network) -> int:
     return max(0, net.num_addresses - 2)
 
 def prefix_from_hosts(hosts: int) -> int:
-    """
-    Given desired usable hosts per subnet, approximate the minimal prefix.
-    For traditional subnets (>= /30), we need 2 addresses for network/broadcast.
-    Special cases: /31 (2 hosts utilizables) and /32 (1 host).
-    """
     if hosts <= 0:
         raise ValueError("Hosts por subred debe ser mayor que 0")
-    # Try to fit into /31 or /32 first
     if hosts == 1:
         return 32
     if hosts == 2:
         return 31
-    # Otherwise include network + broadcast
     total = hosts + 2
     bits = math.ceil(math.log2(total))
     return 32 - bits
+
+def prefix_from_num_subnets(base_prefix: int, num_subnets: int) -> int:
+    if num_subnets <= 0:
+        raise ValueError("Número de subredes debe ser mayor que 0")
+    extra = math.ceil(math.log2(num_subnets))
+    return base_prefix + extra
 
 class SubnetGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_TITLE)
         self.geometry(APP_SIZE)
-        self.minsize(900, 600)
+        self.minsize(950, 680)
 
         self._build_form()
         self._build_info()
@@ -110,13 +111,15 @@ class SubnetGUI(tk.Tk):
         self.hosts_var = tk.StringVar()
         ttk.Entry(frm, textvariable=self.hosts_var, width=12).grid(row=0, column=5, sticky="w", padx=8)
 
-        # Buttons
-        ttk.Button(frm, text="Calcular", command=self.on_calc).grid(row=0, column=6, padx=10)
-        ttk.Button(frm, text="Exportar CSV", command=self.on_export).grid(row=0, column=7, padx=6)
+        ttk.Label(frm, text="Número de subredes (opcional):").grid(row=0, column=6, sticky="w", padx=8)
+        self.num_subnets_var = tk.StringVar()
+        ttk.Entry(frm, textvariable=self.num_subnets_var, width=12).grid(row=0, column=7, sticky="w", padx=8)
 
-        # helper text
-        ttk.Label(frm, text="* Use prefijo O hosts. Si ambos se llenan, tendrá prioridad 'prefijo'.").grid(
-            row=1, column=0, columnspan=8, sticky="w", padx=8, pady=(0,6)
+        ttk.Button(frm, text="Calcular", command=self.on_calc).grid(row=0, column=8, padx=10)
+        ttk.Button(frm, text="Exportar CSV", command=self.on_export).grid(row=0, column=9, padx=6)
+
+        ttk.Label(frm, text="* Prioridad: Prefijo > Hosts por subred > Número de subredes. Usa solo uno.").grid(
+            row=1, column=0, columnspan=10, sticky="w", padx=8, pady=(0,6)
         )
 
     def _build_info(self):
@@ -130,7 +133,6 @@ class SubnetGUI(tk.Tk):
         ]
         self.info_vars = {k: tk.StringVar(value="-") for k in labels}
 
-        # Display grid 2 columns of key/value pairs
         left = ["IP", "Prefijo", "Máscara decimal", "Máscara hex", "Máscara binaria", "Red", "Primer host"]
         right = ["Último host", "Broadcast", "Hosts utilizables", "Tipo", "Clase", "IP hex", "IP binario"]
 
@@ -141,6 +143,21 @@ class SubnetGUI(tk.Tk):
         for i, key in enumerate(right):
             ttk.Label(self.info, text=f"{key}:").grid(row=i, column=2, sticky="e", padx=8, pady=2)
             ttk.Label(self.info, textvariable=self.info_vars[key]).grid(row=i, column=3, sticky="w", padx=8, pady=2)
+
+        color_frame = ttk.Frame(self.info)
+        color_frame.grid(row=len(left), column=0, columnspan=4, sticky="w", padx=8, pady=(10,4))
+        ttk.Label(color_frame, text="Máscara binaria (segmentada):").pack(anchor="w")
+        self.mask_text = tk.Text(color_frame, height=2, width=60, relief="flat")
+        self.mask_text.pack(anchor="w")
+        self.mask_text.tag_configure("net", foreground=RED_CLR, font=("Consolas", 11, "bold"))
+        self.mask_text.tag_configure("sub", foreground=SUB_CLR, font=("Consolas", 11, "bold"))
+        self.mask_text.tag_configure("host", foreground=HOST_CLR, font=("Consolas", 11, "bold"))
+
+        legend = ttk.Frame(self.info)
+        legend.grid(row=len(left)+1, column=0, columnspan=4, sticky="w", padx=8, pady=(0,6))
+        tk.Label(legend, text="red", fg=RED_CLR).pack(side="left", padx=(0,12))
+        tk.Label(legend, text="subred", fg=SUB_CLR).pack(side="left", padx=(0,12))
+        tk.Label(legend, text="host", fg=HOST_CLR).pack(side="left", padx=(0,12))
 
     def _build_table(self):
         tbl_frame = ttk.LabelFrame(self, text="Subredes generadas")
@@ -153,10 +170,25 @@ class SubnetGUI(tk.Tk):
             self.tree.column(c, width=140 if c != "#" else 60, anchor="center")
         self.tree.pack(fill="both", expand=True, side="left")
 
-        # add scrollbar
         scroll_y = ttk.Scrollbar(tbl_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll_y.set)
         scroll_y.pack(side="right", fill="y")
+
+    def _render_colored_mask(self, base_prefix: int, new_prefix: int):
+        bits = "1" * new_prefix + "0" * (32 - new_prefix)
+        self.mask_text.configure(state="normal")
+        self.mask_text.delete("1.0", tk.END)
+        for i in range(32):
+            if i < base_prefix:
+                tag = "net"
+            elif i < new_prefix:
+                tag = "sub"
+            else:
+                tag = "host"
+            self.mask_text.insert(tk.END, bits[i], tag)
+            if i in (7,15,23):
+                self.mask_text.insert(tk.END, ".")
+        self.mask_text.configure(state="disabled")
 
     def on_calc(self):
         try:
@@ -167,23 +199,25 @@ class SubnetGUI(tk.Tk):
             iface = IPv4Interface(cidr)
             base = iface.network
 
-            # Determine target prefix
             new_prefix_str = self.prefix_var.get().strip()
             hosts_str = self.hosts_var.get().strip()
+            num_subnets_str = self.num_subnets_var.get().strip()
 
             if new_prefix_str:
                 new_prefix = int(new_prefix_str)
             elif hosts_str:
                 hosts = int(hosts_str)
                 new_prefix = prefix_from_hosts(hosts)
+            elif num_subnets_str:
+                nsubs = int(num_subnets_str)
+                new_prefix = prefix_from_num_subnets(base.prefixlen, nsubs)
             else:
-                # No subdivision requested -> just show base network
                 new_prefix = base.prefixlen
 
             if new_prefix < base.prefixlen or new_prefix > 32:
                 raise ValueError(f"Prefijo destino inválido. Debe ser entre {base.prefixlen} y 32.")
 
-            # Fill info panel
+            max_subs = 2 ** (new_prefix - base.prefixlen)
             first_octet = int(str(iface.ip).split(".")[0])
             mask_dec = str(base.netmask)
             first_host, last_host = usable_host_range(base)
@@ -202,9 +236,9 @@ class SubnetGUI(tk.Tk):
             self.info_vars["IP hex"].set(to_hex(str(iface.ip)))
             self.info_vars["IP binario"].set(to_bin(str(iface.ip)))
 
-            # Build subnets
-            subnets = list(base.subnets(new_prefix=new_prefix)) if new_prefix != base.prefixlen else [base]
+            self._render_colored_mask(base.prefixlen, new_prefix)
 
+            subnets = list(base.subnets(new_prefix=new_prefix)) if new_prefix != base.prefixlen else [base]
             self.subnet_rows = []
             for i, net in enumerate(subnets):
                 hosts = list(net.hosts())
@@ -213,13 +247,15 @@ class SubnetGUI(tk.Tk):
                 usable = usable_host_count(net)
                 self.subnet_rows.append((i, f"{net.network_address}/{net.prefixlen}", first, last, str(net.broadcast_address), usable))
 
-            # refresh table
             for row in self.tree.get_children():
                 self.tree.delete(row)
             for r in self.subnet_rows:
                 self.tree.insert("", "end", values=r)
 
-            messagebox.showinfo("Listo", f"Se generaron {len(self.subnet_rows)} subred(es) con prefijo /{new_prefix}.")
+            msg = f"Se generaron {len(self.subnet_rows)} subred(es) con prefijo /{new_prefix}."
+            if num_subnets_str:
+                msg += f" (Solicitadas: {num_subnets_str}, Máx. posible: {max_subs})"
+            messagebox.showinfo("Listo", msg)
 
         except Exception as e:
             messagebox.showerror("Error", str(e))
